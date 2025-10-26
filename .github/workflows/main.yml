@@ -6,34 +6,26 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 3600
 
     steps:
-      - name: Configure RDP & Performance Settings
+      - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # Use the built-in, secure "Remote Desktop" firewall rules
-          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
 
-          # --- RDP Performance Tuning (Reduce Bandwidth) ---
-          $PerfPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          if (-not (Test-Path $PerfPath)) {
-              New-Item -Path $PerfPath -Force | Out-Null
-          }
-          # Disable cosmetic features to save bandwidth
-          Set-ItemProperty -Path $PerfPath -Name "fDisableCursorShadow" -Value 1 -Force
-          Set-ItemProperty -Path $PerfPath -Name "fDisableMenuAnims" -Value 1 -Force
-          Set-ItemProperty -Path $PerfPath -Name "fDisableVisualStyles" -Value 1 -Force
-          Set-ItemProperty -Path $PerfPath -Name "fDisableWallpaper" -Value 1 -Force
-          Set-ItemProperty -Path $PerfPath -Name "fEnableFontSmoothing" -Value 0 -Force
-
-          # Set a lower default color depth
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-                           -Name "ColorDepth" -Value 4 -Force # 4 = 16-bit
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
@@ -119,3 +111,4 @@ jobs:
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
+
