@@ -1,4 +1,4 @@
-name: RDP (Optimized)
+name: RDP (Optimized & Fixed User Creation)
 
 on:
   workflow_dispatch:
@@ -10,56 +10,149 @@ jobs:
 
     steps:
       - name: Enable RDP and Configure Firewall
+        shell: powershell
         run: |
           # Enable Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" -Value 0 -Force
 
-          # Disable NLA (optional, allows easier connection)
+          # (Optional) Disable NLA for easier connections; remove if you want NLA enforced
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" -Value 0 -Force
 
-          # Open RDP port
-          netsh advfirewall firewall add rule name="RDP Access" dir=in action=allow protocol=TCP localport=3389
+          # Ensure RDP port is allowed
+          if (-not (Get-NetFirewallRule -DisplayName "RDP Access" -ErrorAction SilentlyContinue)) {
+            netsh advfirewall firewall add rule name="RDP Access" dir=in action=allow protocol=TCP localport=3389
+          } else {
+            Write-Host "Firewall rule 'RDP Access' already present"
+          }
 
-      - name: Create RDP User
+      - name: Create or Update RDP User (robust)
+        shell: powershell
         run: |
-          $pw = [System.Web.Security.Membership]::GeneratePassword(14,3)
-          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $sec -AccountNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$pw" >> $env:GITHUB_ENV
+          $username = "RDP"
 
-      - name: Install and Start Tailscale
+          # Generate a reasonably strong password (14 chars, 3 non-alphanumeric)
+          $pw = [System.Web.Security.Membership]::GeneratePassword(14,3)
+          $secure = ConvertTo-SecureString $pw -AsPlainText -Force
+
+          try {
+            if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+              Write-Host "User '$username' exists — updating password"
+              Set-LocalUser -Name $username -Password $secure -ErrorAction Stop
+            } else {
+              Write-Host "Creating user '$username'"
+              New-LocalUser -Name $username -Password $secure -AccountNeverExpires -UserMayNotChangePassword:$false -ErrorAction Stop
+            }
+          } catch {
+            Write-Error "Failed to create or update local user: $_"
+            exit 1
+          }
+
+          # Ensure group membership; check groups exist before adding
+          $groups = @("Administrators","Remote Desktop Users")
+          foreach ($g in $groups) {
+            if (-not (Get-LocalGroup -Name $g -ErrorAction SilentlyContinue)) {
+              Write-Warning "Local group '$g' not found; skipping group add"
+              continue
+            }
+            if (-not (Get-LocalGroupMember -Group $g -Member $username -ErrorAction SilentlyContinue)) {
+              try {
+                Add-LocalGroupMember -Group $g -Member $username -ErrorAction Stop
+              } catch {
+                Write-Warning "Failed to add $username to group $g: $_"
+              }
+            } else {
+              Write-Host "$username already a member of $g"
+            }
+          }
+
+          # Export credentials into the GitHub environment
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=$username"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASS=$pw"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_CREDS=User: $username | Password: $pw"
+
+          # Final check
+          if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+            Write-Error "User creation verification failed"
+            exit 1
+          } else {
+            Write-Host "User $username ready"
+          }
+
+      - name: Install Tailscale
+        shell: powershell
         run: |
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $file = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $file
-          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
-          Remove-Item $file -Force
+          $out = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          # Proper quoting for msiexec arguments
+          Start-Process msiexec.exe -ArgumentList "/i","`"$out`"","/quiet","/norestart" -Wait
+          Remove-Item $out -Force -ErrorAction SilentlyContinue
 
-          # Connect to your Tailscale network
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-runner-$env:GITHUB_RUN_ID
+      - name: Establish Tailscale Connection
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $exe = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Tailscale executable not found at $exe"
+            exit 1
+          }
 
-          # Capture IP
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          & $exe up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="gh-runner-$env:GITHUB_RUN_ID"
+          Start-Sleep -Seconds 3
 
-      - name: Connection Info
+          # Wait briefly for IP assignment
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 12) {
+            $tsIP = & $exe ip -4 2>$null
+            if ($tsIP) { break }
+            Start-Sleep -Seconds 5
+            $retries++
+          }
+
+          if (-not $tsIP) {
+            Write-Error "Tailscale IP not assigned after wait; check Tailscale status"
+            & $exe status
+            exit 1
+          }
+
+          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$tsIP"
+          Write-Host "Tailscale IP: $tsIP"
+
+      - name: Verify RDP Accessibility
+        shell: powershell
+        run: |
+          $tsIP = $env:TAILSCALE_IP
+          if (-not $tsIP) {
+            Write-Error "TAILSCALE_IP not set"
+            exit 1
+          }
+          Write-Host "Testing TCP connectivity to $tsIP:3389"
+          $test = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
+          if (-not $test.TcpTestSucceeded) {
+            Write-Error "TCP connection to RDP port 3389 failed. Test result: $($test)"
+            exit 1
+          }
+          Write-Host "TCP connectivity successful"
+
+      - name: Connection Info (printed)
+        shell: powershell
         run: |
           Write-Host "`n=== RDP INFO ==="
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           Write-Host "User: $env:RDP_USER"
           Write-Host "Password: $env:RDP_PASS"
-          Write-Host "================"
-          Write-Host "Connect via Tailscale from your local client using the above credentials."
+          Write-Host "================="
+          Write-Host "Connect using your Tailscale client to the above IP."
 
-      - name: Keep RDP Session Active
+      - name: Keep Runner Alive (simple)
+        shell: powershell
         run: |
-          Write-Host "RDP session active..."
+          Write-Host "Keeping runner active to allow RDP. Terminate the workflow when done."
           while ($true) {
             Start-Sleep -Seconds 300
           }
