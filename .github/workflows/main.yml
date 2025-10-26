@@ -66,11 +66,19 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
+      - name: Establish Tailscale Connection (Exit Node)
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
+          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
+
+          # Bring up Tailscale with exit node capabilities
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$hostname `
+            --advertise-exit-node `
+            --advertise-routes=0.0.0.0/0,::/0 `
+            --accept-dns=false `
+            --shields-up=false
+
           # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
@@ -79,12 +87,14 @@ jobs:
               Start-Sleep -Seconds 5
               $retries++
           }
-          
+
           if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
+
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
       
       - name: Verify RDP Accessibility
         run: |
