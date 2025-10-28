@@ -31,22 +31,14 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          # Set a fixed password that meets ALL Windows complexity rules
-          # This password does NOT contain the username "RDP"
-          $password = "ActionVM-456!"
-          
-          # Convert the plain text password to a SecureString
+          $password = "ActionVM-226!"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          # Create the user and add them to the necessary groups
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # Output the credentials to the environment for the final step
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           
-          # Verify the user was created successfully
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
               exit 1
