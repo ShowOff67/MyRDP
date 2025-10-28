@@ -31,8 +31,9 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          # Set a fixed password that meets Windows complexity requirements
-          $password = "RdpUser-123!"
+          # Set a fixed password that meets ALL Windows complexity rules
+          # This password does NOT contain the username "RDP"
+          $password = "ActionVM-456!"
           
           # Convert the plain text password to a SecureString
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
