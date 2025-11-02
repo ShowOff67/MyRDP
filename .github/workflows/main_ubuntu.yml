@@ -1,53 +1,114 @@
-name: Ubuntu-RDP
+# .github/workflows/rdp-linux.yml
+name: RDP Linux
+
 on:
   workflow_dispatch:
 
 jobs:
-  ubuntu-rdp:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+  secure-rdp:
+    # This matrix allows you to choose between Ubuntu or Kali at runtime,
+    # or you can simply remove the matrix and set `runs-on: ubuntu-latest`.
+    strategy:
+      matrix:
+        os: [ubuntu-latest] # You can add "kalilinux/kali-rolling" if you have a self-hosted Kali runner
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 3600
 
     steps:
-      - name: Install Desktop and XRDP
+      - name: Configure System and Install Dependencies
         run: |
+          echo "Updating package list and installing dependencies..."
           sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
-          sudo systemctl enable --now xrdp
+          # DEBIAN_FRONTEND=noninteractive prevents installers from prompting for input
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xrdp xfce4 xfce4-goodies \
+            net-tools curl ufw
+          
+          # Allow RDP traffic through the firewall
+          sudo ufw allow 3389/tcp
+          
+          echo "System configured."
 
-          # Create fixed user RDP with fixed password
-          if ! id -u RDP >/dev/null 2>&1; then
-            sudo useradd -m -s /bin/bash RDP
-          fi
-          echo "RDP:@ShowOff67" | sudo chpasswd
-          sudo usermod -aG sudo,RDP xrdp || true
-          # Ensure RDP user uses XFCE session
-          echo "startxfce4" | sudo tee /home/RDP/.xsession >/dev/null
-          sudo chown RDP:RDP /home/RDP/.xsession
+      - name: Create RDP User with Secure Password
+        run: |
+          # The password for the RDP user
+          password="@ShowOff67"
+          username="rdp"
+          
+          # Create the user with a home directory and bash shell
+          # The password is piped to chpasswd to set it securely
+          sudo useradd -m -s /bin/bash "$username"
+          echo "$username:$password" | sudo chpasswd
+          
+          # Add the new user to the sudo group (for administrative privileges)
+          sudo usermod -aG sudo "$username"
+          
+          # Add user to the ssl-cert group, which is required by xrdp
+          sudo adduser "$username" ssl-cert
+          
+          # Configure the user's session to use XFCE
+          echo "xfce4-session" > "/home/$username/.xsession"
+          sudo chown "$username:$username" "/home/$username/.xsession"
+          
+          # Store credentials for the final summary step
+          echo "RDP_USER=$username" >> $GITHUB_ENV
+          echo "RDP_PASS=$password" >> $GITHUB_ENV
+          
+          echo "User '$username' created successfully."
 
       - name: Install Tailscale
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sudo sh
+          # Use the official Tailscale installation script
+          curl -fsSL https://tailscale.com/install.sh | sh
 
-      - name: Start Tailscale (automatic if secret provided)
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      - name: Establish Tailscale Connection
         run: |
-          if [ -n "$TAILSCALE_AUTH_KEY" ]; then
-            sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --hostname=ubuntu-runner-${{ github.run_id }} || true
-          else
-            echo "No TAILSCALE_AUTH_KEY provided -> tailscale up will require manual login."
-            sudo tailscale up --hostname=ubuntu-runner-${{ github.run_id }} || true
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          ts_ip=""
+          retries=0
+          while [ -z "$ts_ip" ] && [ $retries -lt 10 ]; do
+              ts_ip=$(sudo tailscale ip -4)
+              sleep 5
+              retries=$((retries+1))
+          done
+          
+          if [ -z "$ts_ip" ]; then
+              echo "::error::Tailscale IP not assigned after multiple attempts. Exiting."
+              exit 1
           fi
-          # print IPv4 tailscale address
-          echo "TAILSCALE_IP=$(sudo tailscale ip -4)" >> $GITHUB_ENV || true
+          
+          echo "TAILSCALE_IP=$ts_ip" >> $GITHUB_ENV
 
-      - name: Show RDP Info
+      - name: Verify RDP Accessibility
         run: |
-          echo "=== Ubuntu RDP ==="
-          echo "Username: RDP"
-          echo "Password: @ShowOff67"
-          echo "Tailscale IP: $(sudo tailscale ip -4 || echo 'not-assigned')"
-          echo "Connect from Windows using Remote Desktop (mstsc) -> TailscaleIP:3389"
+          echo "Tailscale IP: $TAILSCALE_IP"
+          
+          # Test connectivity to the RDP port on the Tailscale IP
+          # We use a timeout to prevent the step from hanging indefinitely
+          if timeout 10 bash -c "</dev/tcp/$TAILSCALE_IP/3389"; then
+              echo "TCP connectivity to port 3389 successful!"
+          else
+              echo "::error::TCP connection to RDP port 3389 failed."
+              # For debugging, show xrdp service status
+              sudo systemctl status xrdp
+              exit 1
+          fi
+      
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== RDP ACCESS ==="
+          echo "Address:  $TAILSCALE_IP"
+          echo "Username: $RDP_USER"
+          echo "Password: $RDP_PASS"
           echo "=================="
-          # keep job alive while you connect (cancel workflow when done)
-          while true; do sleep 300; done
+          echo ""
+          
+          # Keep runner active indefinitely (or until manually cancelled/timeout)
+          while true; do
+              echo "[$(date)] RDP Active - Use the 'Cancel workflow' button in GitHub to terminate."
+              sleep 300
+          done
