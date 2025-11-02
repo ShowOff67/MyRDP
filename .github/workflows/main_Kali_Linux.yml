@@ -1,0 +1,53 @@
+name: Kali-Like-RDP
+on:
+  workflow_dispatch:
+
+jobs:
+  kali-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install XFCE, XRDP and Kali tools
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
+          sudo systemctl enable --now xrdp
+
+          # Install some Kali meta-packages (optional - may be large)
+          sudo apt-get install -y kali-tools-top10 kali-linux-core || true
+
+          # Create fixed user RDP with fixed password
+          if ! id -u RDP >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash RDP
+          fi
+          echo "RDP:@ShowOff67" | sudo chpasswd
+          sudo usermod -aG sudo xrdp || true
+          echo "startxfce4" | sudo tee /home/RDP/.xsession >/dev/null
+          sudo chown RDP:RDP /home/RDP/.xsession
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+
+      - name: Start Tailscale (auto if secret present)
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          if [ -n "$TAILSCALE_AUTH_KEY" ]; then
+            sudo tailscale up --authkey="$TAILSCALE_AUTH_KEY" --hostname=kali-runner-${{ github.run_id }} || true
+          else
+            echo "No TAILSCALE_AUTH_KEY provided -> tailscale up will require manual login."
+            sudo tailscale up --hostname=kali-runner-${{ github.run_id }} || true
+          fi
+          echo "TAILSCALE_IP=$(sudo tailscale ip -4)" >> $GITHUB_ENV || true
+
+      - name: Show Access Info
+        run: |
+          echo "=== Kali-Like RDP ==="
+          echo "Username: RDP"
+          echo "Password: @ShowOff67"
+          echo "Tailscale IP: $(sudo tailscale ip -4 || echo 'not-assigned')"
+          echo "Connect using Windows Remote Desktop -> TailscaleIP:3389"
+          echo "====================="
+          while true; do sleep 300; done
