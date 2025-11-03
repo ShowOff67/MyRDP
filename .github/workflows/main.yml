@@ -53,10 +53,16 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
+      # 🔹 Only this section changed
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Bring up Tailscale with the provided auth key and use a fixed hostname for MagicDNS
+          $fixedHostname = "rdp-fixed-win"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$fixedHostname `
+            --accept-dns=true `
+            --accept-routes=true
           
           # Wait for Tailscale to assign an IP
           $tsIP = $null
@@ -72,7 +78,9 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
+          Write-Host "You can also connect using MagicDNS name: $fixedHostname.<your-tailnet>.ts.net"
+      # 🔹 End of changed section
+
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
@@ -89,6 +97,7 @@ jobs:
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Hostname (MagicDNS): rdp-fixed-win.<your-tailnet>.ts.net"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
