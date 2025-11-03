@@ -1,10 +1,10 @@
-name: RDP
+name: Win11_RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  showoff:
     runs-on: windows-latest
     timeout-minutes: 3600
 
@@ -57,7 +57,7 @@ jobs:
       - name: Establish Tailscale Connection
         run: |
           # Bring up Tailscale with the provided auth key and use a fixed hostname for MagicDNS
-          $fixedHostname = "rdp-fixed-win"
+          $fixedHostname = "showoff-RDP"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
             --hostname=$fixedHostname `
@@ -97,7 +97,7 @@ jobs:
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Hostname (MagicDNS): rdp-fixed-win.<your-tailnet>.ts.net"
+          Write-Host "Hostname (MagicDNS): showoff-RDP.parrot-wyrm.ts.net"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
